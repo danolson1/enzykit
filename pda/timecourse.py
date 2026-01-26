@@ -275,7 +275,7 @@ def _calculate_blank_pyruvate(
 
     # Find the row closest to blank_time
     idx_blank = (spectral_df['Time_s'] - blank_time).abs().idxmin()
-    blank_row = spectral_df.iloc[idx_blank]
+    blank_row = spectral_df.loc[idx_blank]
     actual_blank_time = blank_row['Time_s']
 
     # Build spectrum dataframe for blank time point
