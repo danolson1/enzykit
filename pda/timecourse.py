@@ -273,8 +273,37 @@ def _calculate_blank_pyruvate(
         print("Calculating pyruvate concentration at blank time...")
         print(f"  Assumption: NADH = 0 mM at t = {blank_time} s")
 
+    # Check if blank_time is valid
+    if pd.isna(blank_time):
+        if verbose:
+            print(f"  ⚠️  Warning: no blank_time value is present in the metadata.")
+            print(f"     Pyruvate concentration was not calculated, and the")
+            print(f"     initial_pyruvate_mM value ({fallback_pyruvate_mM:.4f} mM) was used instead.")
+        if fallback_pyruvate_mM is not None:
+            return fallback_pyruvate_mM
+        else:
+            raise ValueError(
+                "blank_time is NaN and no fallback pyruvate value provided. "
+                "Please provide initial_pyruvate_mM."
+            )
+
     # Find the row closest to blank_time
     idx_blank = (spectral_df['Time_s'] - blank_time).abs().idxmin()
+
+    # Check if idx_blank is valid
+    if pd.isna(idx_blank):
+        if verbose:
+            print(f"  ⚠️  Warning: Could not find valid time point near blank_time.")
+            print(f"     Pyruvate concentration was not calculated, and the")
+            print(f"     initial_pyruvate_mM value ({fallback_pyruvate_mM:.4f} mM) was used instead.")
+        if fallback_pyruvate_mM is not None:
+            return fallback_pyruvate_mM
+        else:
+            raise ValueError(
+                "Could not find valid blank time point and no fallback provided. "
+                "Please provide initial_pyruvate_mM."
+            )
+
     blank_row = spectral_df.loc[idx_blank]
     actual_blank_time = blank_row['Time_s']
 
