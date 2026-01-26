@@ -223,11 +223,13 @@ def load_kinetic_data(
     >>> cell_1_df = load_kinetic_data('data.csv', sample_filter='CELL_1')
     """
     df = pd.read_csv(file_path)
-    
+
     if sample_filter is not None:
         if 'sample' in df.columns:
             df = df[df['sample'] == sample_filter].copy()
+            # Reset index after filtering to avoid index issues
+            df = df.reset_index(drop=True)
         else:
             print(f"Warning: 'sample' column not found, cannot filter by '{sample_filter}'")
-    
+
     return df
