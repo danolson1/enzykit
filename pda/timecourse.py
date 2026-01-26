@@ -664,7 +664,7 @@ def _generate_diagnostic_plots(
         title_text=plot_title,
         template='plotly_white',
         showlegend=True,
-        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99)
+        legend=dict(yanchor="top", y=0.75, xanchor="right", x=0.99)
     )
 
     fig.show()
