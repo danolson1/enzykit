@@ -29,6 +29,7 @@ def process_pdc_timecourse(
     method='constrained',
     wavelength_range=(320, 420),
     absorbance_max=2,
+    fit_intercept=False,
     plot=False,
     plot_title=None,
     verbose=True
@@ -84,6 +85,11 @@ def process_pdc_timecourse(
     absorbance_max : float, optional (default=2.5)
         Maximum absorbance threshold to exclude saturated data
         Only used if method='constrained'
+
+    fit_intercept : bool, optional (default=False)
+        If True, allows non-zero intercept (baseline offset) in spectral fitting
+        If False, forces fit through zero
+        Setting to True can help absorb baseline shifts and reduce jaggedness
 
     plot : bool, optional (default=False)
         If True, generates diagnostic plots
@@ -186,7 +192,7 @@ def process_pdc_timecourse(
         blank_pyruvate_mM = _calculate_blank_pyruvate(
             spectral_df, standards_df, spectral_cols, blank_time,
             method, wavelength_range, absorbance_max,
-            initial_pyruvate_mM, verbose
+            initial_pyruvate_mM, fit_intercept, verbose
         )
 
         # If both blank_time and initial_pyruvate_mM were specified, compare them
@@ -226,6 +232,7 @@ def process_pdc_timecourse(
             spectral_df, standards_df, spectral_cols,
             method, wavelength_range, absorbance_max,
             blank_pyruvate_mM,
+            fit_intercept,
             verbose
         )
         results_df['Blank_Pyruvate_mM'] = blank_pyruvate_mM
@@ -262,7 +269,7 @@ def process_pdc_timecourse(
 def _calculate_blank_pyruvate(
     spectral_df, standards_df, spectral_cols, blank_time,
     method, wavelength_range, absorbance_max,
-    fallback_pyruvate_mM, verbose
+    fallback_pyruvate_mM, fit_intercept, verbose
 ):
     """
     Calculate pyruvate concentration at blank_time assuming NADH=0.
@@ -336,7 +343,7 @@ def _calculate_blank_pyruvate(
             standards_df=standards_df,
             wavelength_range=wl_range,
             absorbance_max=abs_max,
-            fit_intercept=True,
+            fit_intercept=fit_intercept,
             fixed_nadh=0.0,  # Fix NADH at 0 for blank
             plot=False
         )
@@ -417,6 +424,7 @@ def _process_spectral_deconvolution(
     spectral_df, standards_df, spectral_cols,
     method, wavelength_range, absorbance_max,
     fixed_pyruvate_mM,
+    fit_intercept,
     verbose
 ):
     """Process using spectral deconvolution methods with fixed pyruvate"""
@@ -460,7 +468,7 @@ def _process_spectral_deconvolution(
             standards_df=standards_df,
             wavelength_range=wl_range,
             absorbance_max=abs_max,
-            fit_intercept=True,
+            fit_intercept=fit_intercept,
             fixed_pyr=fixed_pyruvate_mM,
             plot=False
         )
