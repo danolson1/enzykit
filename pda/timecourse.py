@@ -722,7 +722,7 @@ def calculate_max_slope(
     -------
     dict
         Dictionary containing:
-        - 'V_max_slope': Maximum slope in mM/s (or None if insufficient data or R² too low)
+        - 'V_max_slope': Maximum slope in µM/min (or None if insufficient data or R² too low)
         - 'slope_start_time': Start time of best slope window in seconds (or None)
         - 'slope_end_time': End time of best slope window in seconds (or None)
         - 'slope_r_squared': R² value of the best fit (or None)
@@ -743,7 +743,7 @@ def calculate_max_slope(
     --------
     >>> results = process_pdc_timecourse(...)
     >>> slope_data = calculate_max_slope(results, plot=True)
-    >>> print(f"Maximum velocity: {slope_data['V_max_slope']:.4f} mM/s")
+    >>> print(f"Maximum velocity: {slope_data['V_max_slope']:.2f} µM/min")
     >>> print(f"R²: {slope_data['slope_r_squared']:.3f}")
     """
     from scipy import stats
@@ -820,9 +820,9 @@ def calculate_max_slope(
             'fig': None
         }
     else:
-        # Valid result
+        # Valid result - convert slope from mM/s to µM/min (multiply by 1000 × 60 = 60000)
         result = {
-            'V_max_slope': best_slope,
+            'V_max_slope': best_slope * 60000,
             'slope_start_time': best_window_start,
             'slope_end_time': best_window_end,
             'slope_r_squared': best_r_squared,
@@ -861,11 +861,18 @@ def calculate_max_slope(
             )
         )
 
-        # Add annotation
+        # Add annotation - offset to the right by 20% of window duration
+        time_offset = (best_window_end - best_window_start) * 0.2
+        annotation_x = best_window_start + time_offset
+        annotation_y = best_slope * annotation_x + best_intercept
+
+        # Convert slope to µM/min for display (mM/s × 60000 = µM/min)
+        slope_uM_per_min = best_slope * 60000
+
         fig.add_annotation(
-            x=best_window_start,
-            y=nadh_fit[0],
-            text=f"V = {best_slope:.4f} mM/s<br>R² = {best_r_squared:.3f}",
+            x=annotation_x,
+            y=annotation_y,
+            text=f"V = {slope_uM_per_min:.2f} µM/min<br>R² = {best_r_squared:.3f}",
             showarrow=True,
             arrowhead=2,
             arrowsize=1,
@@ -880,7 +887,7 @@ def calculate_max_slope(
 
         # Update layout
         if plot_title is None:
-            plot_title = f'Maximum Slope Analysis (V = {best_slope:.4f} mM/s)'
+            plot_title = f'Maximum Slope Analysis (V = {slope_uM_per_min:.2f} µM/min)'
 
         # Calculate y-axis range with minimum of -0.1
         y_min = max(-0.1, data['NADH_mM'].min() * 0.95)
