@@ -25,7 +25,7 @@ pip install -e .
 !pip install git+https://github.com/danolson1/enzykit.git
 
 # Import functions
-from pda import (
+from enzykit import (
     calculate_concentrations,
     process_pdc_timecourse,
     calculate_max_slope,
@@ -54,7 +54,7 @@ slope_data = calculate_max_slope(
 
 ## Modules
 
-### `pda` - Photodiode Array Spectrophotometer Analysis
+### Core Modules
 
 - **spectral.py** - Spectral deconvolution functions for calculating NADH and pyruvate concentrations
 - **timecourse.py** - Time course processing for enzyme assays (PDC, FDH, ADH)
