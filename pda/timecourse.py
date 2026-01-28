@@ -678,6 +678,230 @@ def _generate_diagnostic_plots(
     fig.show()
 
 
+def calculate_max_slope(
+    timecourse_data,
+    window_fraction=0.2,
+    min_window_size=5,
+    min_r_squared=0.9,
+    slope_direction='negative',
+    plot=False,
+    plot_title=None
+):
+    """
+    Calculate maximum slope (velocity) from timecourse data using rolling linear regression.
+
+    This function finds the region of maximum velocity by performing linear regression
+    over a rolling window of the timecourse data. Useful for determining the initial
+    velocity (V) from enzyme assay data.
+
+    Parameters
+    ----------
+    timecourse_data : pandas.DataFrame
+        DataFrame from process_pdc_timecourse() containing 'Time_Relative_s' and 'NADH_mM' columns
+
+    window_fraction : float, optional (default=0.2)
+        Fraction of total assay duration to use as window size (0.2 = 1/5 of duration)
+
+    min_window_size : int, optional (default=5)
+        Minimum number of data points required in the regression window
+
+    min_r_squared : float, optional (default=0.9)
+        Minimum R² value required for the fit to be considered valid
+
+    slope_direction : str, optional (default='negative')
+        Direction to maximize: 'negative' (most negative slope, typical for NADH consumption)
+        or 'positive' (most positive slope, for NADH production)
+
+    plot : bool, optional (default=False)
+        If True, generates a plot showing NADH vs time with the maximum slope region highlighted
+
+    plot_title : str, optional
+        Custom title for the plot. If None, auto-generates a title.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - 'V_max_slope': Maximum slope in mM/s (or None if insufficient data or R² too low)
+        - 'slope_start_time': Start time of best slope window in seconds (or None)
+        - 'slope_end_time': End time of best slope window in seconds (or None)
+        - 'slope_r_squared': R² value of the best fit (or None)
+        - 'slope_intercept': Y-intercept of the best fit line (or None)
+        - 'window_size': Number of points used in the window (or None)
+        - 'fig': Plotly figure object (or None if plot=False)
+
+    Notes
+    -----
+    - Data is automatically filtered to Time_Relative_s >= 0 before analysis
+    - Returns dict with None values if:
+        * Fewer than min_window_size data points after filtering
+        * Best R² is below min_r_squared threshold
+    - For 'negative' direction, finds most negative slope (minimum)
+    - For 'positive' direction, finds most positive slope (maximum)
+
+    Examples
+    --------
+    >>> results = process_pdc_timecourse(...)
+    >>> slope_data = calculate_max_slope(results, plot=True)
+    >>> print(f"Maximum velocity: {slope_data['V_max_slope']:.4f} mM/s")
+    >>> print(f"R²: {slope_data['slope_r_squared']:.3f}")
+    """
+    from scipy import stats
+
+    # Filter to only data after assay start (Time_Relative_s >= 0)
+    data = timecourse_data[timecourse_data['Time_Relative_s'] >= 0].copy()
+
+    # Check if sufficient data
+    if len(data) < min_window_size:
+        return {
+            'V_max_slope': None,
+            'slope_start_time': None,
+            'slope_end_time': None,
+            'slope_r_squared': None,
+            'slope_intercept': None,
+            'window_size': None,
+            'fig': None
+        }
+
+    # Calculate window size: fraction of assay duration, minimum min_window_size points
+    window_size = max(min_window_size, int(len(data) * window_fraction))
+
+    # Ensure window_size doesn't exceed data length
+    window_size = min(window_size, len(data))
+
+    # Calculate rolling linear regression
+    if slope_direction == 'negative':
+        best_slope = np.inf  # Start with infinity, look for most negative
+    else:  # 'positive'
+        best_slope = -np.inf  # Start with -infinity, look for most positive
+
+    best_window_start = None
+    best_window_end = None
+    best_r_squared = None
+    best_intercept = None
+
+    for i in range(len(data) - window_size + 1):
+        window_data = data.iloc[i:i+window_size]
+
+        # Perform linear regression: NADH = slope * Time + intercept
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            window_data['Time_Relative_s'],
+            window_data['NADH_mM']
+        )
+
+        # Track best slope based on direction
+        if slope_direction == 'negative':
+            # For negative direction, we want the most negative slope (minimum)
+            if slope < best_slope:
+                best_slope = slope
+                best_window_start = window_data['Time_Relative_s'].iloc[0]
+                best_window_end = window_data['Time_Relative_s'].iloc[-1]
+                best_r_squared = r_value ** 2
+                best_intercept = intercept
+        else:  # 'positive'
+            # For positive direction, we want the most positive slope (maximum)
+            if slope > best_slope:
+                best_slope = slope
+                best_window_start = window_data['Time_Relative_s'].iloc[0]
+                best_window_end = window_data['Time_Relative_s'].iloc[-1]
+                best_r_squared = r_value ** 2
+                best_intercept = intercept
+
+    # Check if R² meets threshold
+    if best_r_squared is None or best_r_squared < min_r_squared:
+        # R² too low, return None values
+        result = {
+            'V_max_slope': None,
+            'slope_start_time': None,
+            'slope_end_time': None,
+            'slope_r_squared': best_r_squared,  # Include actual R² even if too low
+            'slope_intercept': None,
+            'window_size': None,
+            'fig': None
+        }
+    else:
+        # Valid result
+        result = {
+            'V_max_slope': best_slope,
+            'slope_start_time': best_window_start,
+            'slope_end_time': best_window_end,
+            'slope_r_squared': best_r_squared,
+            'slope_intercept': best_intercept,
+            'window_size': window_size,
+            'fig': None
+        }
+
+    # Generate plot if requested
+    if plot and result['V_max_slope'] is not None:
+        fig = go.Figure()
+
+        # Plot all NADH data
+        fig.add_trace(
+            go.Scatter(
+                x=data['Time_Relative_s'],
+                y=data['NADH_mM'],
+                mode='markers+lines',
+                name='NADH',
+                marker=dict(size=4, color='blue'),
+                line=dict(color='blue', width=1)
+            )
+        )
+
+        # Plot best slope line
+        time_fit = np.array([best_window_start, best_window_end])
+        nadh_fit = best_slope * time_fit + best_intercept
+
+        fig.add_trace(
+            go.Scatter(
+                x=time_fit,
+                y=nadh_fit,
+                mode='lines',
+                name='Max Slope',
+                line=dict(color='red', width=3, dash='dash')
+            )
+        )
+
+        # Add annotation
+        fig.add_annotation(
+            x=best_window_start,
+            y=nadh_fit[0],
+            text=f"V = {best_slope:.4f} mM/s<br>R² = {best_r_squared:.3f}",
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor='red',
+            ax=-60,
+            ay=-40,
+            bgcolor='white',
+            bordercolor='red',
+            borderwidth=2
+        )
+
+        # Update layout
+        if plot_title is None:
+            plot_title = f'Maximum Slope Analysis (V = {best_slope:.4f} mM/s)'
+
+        # Calculate y-axis range with minimum of -0.1
+        y_min = max(-0.1, data['NADH_mM'].min() * 0.95)
+        y_max = data['NADH_mM'].max() * 1.05
+
+        fig.update_layout(
+            title=plot_title,
+            xaxis_title='Time from Assay Start (s)',
+            yaxis_title='NADH Concentration (mM)',
+            template='plotly_white',
+            height=500,
+            hovermode='x unified',
+            yaxis=dict(range=[y_min, y_max])
+        )
+
+        result['fig'] = fig
+        fig.show()
+
+    return result
+
+
 # =============================================================================
 # FUTURE: Additional Enzyme Assay Functions
 # =============================================================================
