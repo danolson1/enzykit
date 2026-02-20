@@ -152,6 +152,13 @@ def process_pdc_timecourse(
     - R² values < 0.95 may indicate poor fit quality
     """
 
+    # Coerce numeric parameters that may arrive as strings from pandas object-dtype columns
+    # (e.g. when the metadata CSV has '?' values mixed with numbers)
+    if blank_time is not None and not pd.isna(blank_time):
+        blank_time = float(blank_time)
+    if assay_start_time is not None:
+        assay_start_time = float(assay_start_time)
+
     # Validate parameters
     if blank_time is None and initial_pyruvate_mM is None:
         import warnings
