@@ -32,12 +32,19 @@ Example
 """
 
 from .spectral import calculate_concentrations
-from .timecourse import process_pdc_timecourse, calculate_max_slope
+from .timecourse import (
+    process_pdc_timecourse,
+    select_modeling_data,
+    fit_nadh_degradation,
+    calculate_max_slope,
+)
 from .data_io import parse_wav_files, extract_spectrum_at_time, load_kinetic_data
 
 __all__ = [
     'calculate_concentrations',
     'process_pdc_timecourse',
+    'select_modeling_data',
+    'fit_nadh_degradation',
     'calculate_max_slope',
     'parse_wav_files',
     'extract_spectrum_at_time',

@@ -789,6 +789,163 @@ def _generate_diagnostic_plots(
     fig.show()
 
 
+def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8):
+    """
+    Select data points for kinetic modeling from a timecourse DataFrame.
+
+    Filters a timecourse (output of process_pdc_timecourse) to the subset
+    suitable for fitting kinetic models:
+      - Only points at or after assay start (Time_Relative_s >= 0)
+      - Optional exclusion of an initial transition period
+      - Exclusion of points with poor spectral fit quality (R² < r2_threshold)
+
+    Parameters
+    ----------
+    timecourse_df : pandas.DataFrame
+        Output of process_pdc_timecourse().
+
+    mask_until_rel : float, optional (default=None)
+        Time relative to assay start (s). Points with Time_Relative_s <= this
+        value are excluded (transition period at assay start). Pass None to
+        skip initial masking.
+
+    r2_threshold : float, optional (default=0.8)
+        Points with R_squared < r2_threshold are excluded. Set to 0 to
+        disable R² filtering.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Filtered copy of timecourse_df, reset index, ready for kinetic modeling.
+    """
+    data = timecourse_df[timecourse_df['Time_Relative_s'] >= 0].copy().reset_index(drop=True)
+
+    # Initial transition mask
+    if mask_until_rel is not None:
+        initial_mask = data['Time_Relative_s'].values <= float(mask_until_rel)
+    else:
+        initial_mask = np.zeros(len(data), dtype=bool)
+
+    # R² mask
+    if 'R_squared' in data.columns and not data['R_squared'].isna().all():
+        r2_mask = data['R_squared'].values < r2_threshold
+    else:
+        r2_mask = np.zeros(len(data), dtype=bool)
+
+    return data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
+
+
+def fit_nadh_degradation(timecourse_df, r2_threshold=0.8, plot=False, plot_title=None):
+    """
+    Fit an exponential decay model to NADH concentration data.
+
+    Fits NADH(t) = NADH0 * exp(-k * t) where t is time relative to the first
+    data point in the supplied DataFrame (so NADH0 represents NADH at the start
+    of the decay window, not necessarily the assay start).
+
+    Typically called with a pre-windowed DataFrame — e.g. the NADH-degradation
+    standard period, or the pre-assay holding period from process_pdc_timecourse.
+
+    Parameters
+    ----------
+    timecourse_df : pandas.DataFrame
+        DataFrame containing at minimum 'Time_Relative_s' and 'NADH_mM' columns.
+        Typically a slice of process_pdc_timecourse() output covering the decay
+        window of interest.
+
+    r2_threshold : float, optional (default=0.8)
+        Points with R_squared < r2_threshold are excluded before fitting.
+        Set to 0 to use all points.
+
+    plot : bool, optional (default=False)
+        If True, generates a Plotly figure showing data and fit curve.
+
+    plot_title : str, optional
+        Title for the plot. Auto-generated if None.
+
+    Returns
+    -------
+    dict
+        - 'k_s'         : float — decay constant (s⁻¹)
+        - 'NADH0_fit'   : float — fitted NADH at start of decay window (mM)
+        - 'half_life_h' : float — half-life in hours
+        - 'n_points'    : int   — number of points used in the fit
+        - 'fig'         : plotly.graph_objects.Figure or None
+
+    Raises
+    ------
+    ValueError
+        If fewer than 3 data points remain after R² filtering.
+    """
+    from scipy.optimize import curve_fit
+
+    data = timecourse_df.copy()
+
+    # Apply R² filter if column is present
+    if 'R_squared' in data.columns and not data['R_squared'].isna().all():
+        data = data[data['R_squared'] >= r2_threshold].copy()
+
+    if len(data) < 3:
+        raise ValueError(
+            f"Not enough data points ({len(data)}) for exponential fit "
+            f"after R² filtering (threshold={r2_threshold})."
+        )
+
+    # Shift time so t=0 is the first point in the window
+    t_offset = data['Time_Relative_s'].values.min()
+    t_fit = data['Time_Relative_s'].values - t_offset
+    nadh = data['NADH_mM'].values
+
+    def _exp_decay(t, nadh0, k):
+        return nadh0 * np.exp(-k * t)
+
+    popt, _ = curve_fit(
+        _exp_decay, t_fit, nadh,
+        p0=[nadh.max(), 1e-4],
+        bounds=(0, np.inf),
+    )
+    nadh0_fit, k_fit = popt
+    half_life_h = np.log(2) / k_fit / 3600
+
+    result = {
+        'k_s': k_fit,
+        'NADH0_fit': nadh0_fit,
+        'half_life_h': half_life_h,
+        'n_points': len(data),
+        'fig': None,
+    }
+
+    if plot:
+        t_abs = data['Time_Relative_s'].values
+        t_fine = np.linspace(t_fit.min(), t_fit.max(), 300)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=t_abs,
+            y=nadh,
+            mode='markers',
+            marker=dict(size=6, color='steelblue'),
+            name='Data',
+        ))
+        fig.add_trace(go.Scatter(
+            x=t_fine + t_offset,
+            y=_exp_decay(t_fine, *popt),
+            mode='lines',
+            line=dict(color='red'),
+            name=f'Exp decay (k = {k_fit:.2e} s⁻¹, t½ = {half_life_h:.1f} h)',
+        ))
+        fig.update_layout(
+            title=plot_title or 'NADH Exponential Decay Fit',
+            xaxis_title='Time Relative to Assay Start (s)',
+            yaxis_title='NADH (mM)',
+            template='plotly_white',
+        )
+        fig.show()
+        result['fig'] = fig
+
+    return result
+
+
 def calculate_max_slope(
     timecourse_data,
     window_fraction=0.2,
