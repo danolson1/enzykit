@@ -24,8 +24,8 @@ def process_pdc_timecourse(
     spectral_df,
     standards_df,
     assay_start_time,
-    blank_time=None,
-    nadh_time=None,
+    init_pyr_time=None,
+    init_nadh_time=None,
     initial_pyruvate_mM=None,
     method='constrained',
     wavelength_range=(320, 420),
@@ -41,10 +41,19 @@ def process_pdc_timecourse(
     This function processes spectrophotometric time course data from a PDC enzyme assay,
     calculating NADH concentrations at each time point using spectral deconvolution.
 
+    **PDC Assay Protocol:**
+    The assay is performed in three stages, each corresponding to a key time parameter:
+      1. Pyruvate is added to the cuvette. The spectrum at ``init_pyr_time`` is used to
+         calculate the initial pyruvate concentration (assuming NADH = 0 at this point).
+      2. NADH is added. The spectrum at ``init_nadh_time`` is used to calculate the initial
+         NADH concentration (pyruvate fixed at the value from step 1).
+      3. The reaction is initiated by adding enzyme (or acetaldehyde). This is
+         ``assay_start_time``, which defines t = 0 for the kinetic trace.
+
     **Pyruvate Concentration Logic:**
-    - If blank_time is provided: Calculates pyruvate from blank spectrum (assuming NADH=0)
-    - If blank_time is None: Must provide initial_pyruvate_mM manually
-    - initial_pyruvate_mM is optional when blank_time is given (used only as fallback)
+    - If init_pyr_time is provided: Calculates pyruvate from that spectrum (assuming NADH=0)
+    - If init_pyr_time is None: Must provide initial_pyruvate_mM manually
+    - initial_pyruvate_mM is optional when init_pyr_time is given (used only as fallback)
 
     Parameters
     ----------
@@ -61,22 +70,24 @@ def process_pdc_timecourse(
         - 'PYR_Coeff' column: Pyruvate extinction coefficients (mM⁻¹cm⁻¹)
 
     assay_start_time : float
-        Time point (in seconds) when the assay was initiated (e.g., when substrate was added)
+        Time point (in seconds) when the assay was initiated (enzyme or acetaldehyde added).
+        Defines t = 0 for the kinetic trace (Time_Relative_s).
 
-    blank_time : float, optional (default=None)
-        Time point (in seconds) to use for blank/baseline correction
-        If provided, pyruvate concentration is calculated from this spectrum (assuming NADH=0)
-        If None, must provide initial_pyruvate_mM manually
+    init_pyr_time : float, optional (default=None)
+        Time point (in seconds) at which pyruvate was added and initial pyruvate
+        concentration is measured via spectral deconvolution (assuming NADH = 0).
+        If None, must provide initial_pyruvate_mM manually.
 
-    nadh_time : float, optional (default=None)
-        Time point (in seconds) at which initial NADH is measured via spectral deconvolution
-        (pyruvate is fixed at the value calculated from blank_time).
+    init_nadh_time : float, optional (default=None)
+        Time point (in seconds) at which NADH was added and initial NADH concentration
+        is measured via spectral deconvolution (pyruvate fixed at the value from
+        init_pyr_time).
         If provided, the result DataFrame will contain a non-NaN 'Initial_NADH_mM' column.
 
     initial_pyruvate_mM : float, optional (default=None)
-        Initial pyruvate concentration in mM
-        - If blank_time is provided: Used only as fallback if calculation fails
-        - If blank_time is None: REQUIRED - used directly for all calculations
+        Initial pyruvate concentration in mM.
+        - If init_pyr_time is provided: Used only as fallback if spectral calculation fails
+        - If init_pyr_time is None: REQUIRED - used directly for all calculations
 
     method : str, optional (default='constrained')
         Method for NADH calculation:
@@ -116,22 +127,25 @@ def process_pdc_timecourse(
         - 'Pyruvate_mM': Pyruvate concentration in mM (fixed value)
         - 'R_squared': Goodness of fit for each time point
         - 'Intercept': Baseline offset at each time point
-        - 'Blank_Pyruvate_mM': Pyruvate concentration calculated from blank
+        - 'Blank_Pyruvate_mM': Pyruvate concentration calculated from init_pyr_time spectrum
+        - 'Initial_pyruvate_mM': Initial pyruvate concentration (mM)
+        - 'Initial_NADH_mM': Initial NADH concentration (mM), or NaN if init_nadh_time not given
         - 'Method': Method used for calculation
         - 'Fixed_Pyruvate': Whether pyruvate was fixed (boolean)
 
     Examples
     --------
-    >>> # Recommended: Automatic pyruvate calculation from blank
+    >>> # Recommended: Automatic pyruvate calculation from spectrum
     >>> results = process_pdc_timecourse(
     ...     spectral_df=cell_1_df,
     ...     standards_df=standards_df,
-    ...     assay_start_time=180.0,
-    ...     blank_time=180.0,  # Pyruvate auto-calculated from this spectrum
+    ...     assay_start_time=300.0,
+    ...     init_pyr_time=60.0,    # Pyruvate added at 60 s
+    ...     init_nadh_time=180.0,  # NADH added at 180 s
     ...     plot=True
     ... )
 
-    >>> # Manual pyruvate specification (no blank_time)
+    >>> # Manual pyruvate specification (no spectral measurement)
     >>> results = process_pdc_timecourse(
     ...     spectral_df=cell_1_df,
     ...     standards_df=standards_df,
@@ -140,23 +154,27 @@ def process_pdc_timecourse(
     ...     plot=True
     ... )
 
-    >>> # Provide fallback in case blank calculation fails
+    >>> # Provide fallback in case spectral calculation fails
     >>> results = process_pdc_timecourse(
     ...     spectral_df=cell_1_df,
     ...     standards_df=standards_df,
-    ...     assay_start_time=180.0,
-    ...     blank_time=180.0,
-    ...     initial_pyruvate_mM=100.0,  # Used only if blank calc fails
+    ...     assay_start_time=300.0,
+    ...     init_pyr_time=60.0,
+    ...     initial_pyruvate_mM=100.0,  # Used only if spectral calc fails
     ...     plot=True
     ... )
 
     Notes
     -----
     - The function assumes a 1 cm path length
-    - When blank_time is provided, pyruvate is calculated assuming NADH=0
+    - When init_pyr_time is provided, pyruvate is calculated assuming NADH=0
     - For PDC assays, NADH production indicates pyruvate consumption
     - R² values < 0.95 may indicate poor fit quality
     """
+
+    # Local aliases so internal logic uses the old variable names unchanged
+    blank_time = init_pyr_time
+    nadh_time = init_nadh_time
 
     # Coerce numeric parameters that may arrive as strings from pandas object-dtype columns
     # (e.g. when the metadata CSV has '?' values mixed with numbers)
@@ -187,13 +205,13 @@ def process_pdc_timecourse(
         print(f"Method: {method}")
         print(f"Assay start time: {assay_start_time} s")
         if blank_time is not None:
-            print(f"Blank time: {blank_time} s (pyruvate will be calculated)")
+            print(f"Init pyr time: {blank_time} s (pyruvate will be calculated)")
             if initial_pyruvate_mM is not None:
                 print(f"Fallback pyruvate: {initial_pyruvate_mM} mM (if calculation fails)")
         else:
-            print(f"Manual pyruvate: {initial_pyruvate_mM} mM (no blank calculation)")
+            print(f"Manual pyruvate: {initial_pyruvate_mM} mM (no spectral calculation)")
         if nadh_time is not None:
-            print(f"NADH time: {nadh_time} s (initial NADH will be calculated)")
+            print(f"Init NADH time: {nadh_time} s (initial NADH will be calculated)")
         if method == 'constrained':
             print(f"Wavelength range: {wavelength_range[0]}-{wavelength_range[1]} nm")
             print(f"Max absorbance: {absorbance_max}")
@@ -789,7 +807,7 @@ def _generate_diagnostic_plots(
     fig.show()
 
 
-def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8):
+def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, plot=False, plot_title=None):
     """
     Select data points for kinetic modeling from a timecourse DataFrame.
 
@@ -813,6 +831,14 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8):
         Points with R_squared < r2_threshold are excluded. Set to 0 to
         disable R² filtering.
 
+    plot : bool, optional (default=False)
+        If True, generates a Plotly scatter plot showing masked points (gray)
+        and kept points (steelblue), plus a dashed reference line at the
+        initial NADH concentration (first point at or after assay start).
+
+    plot_title : str, optional (default=None)
+        Title for the plot. Auto-generated if None.
+
     Returns
     -------
     pandas.DataFrame
@@ -832,7 +858,70 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8):
     else:
         r2_mask = np.zeros(len(data), dtype=bool)
 
-    return data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
+    kept = data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
+
+    if plot and len(data) > 0:
+        initial_nadh = data['NADH_mM'].iloc[0]
+        kept_times = set(kept['Time_s'].values)
+        masked_data = data[~data['Time_s'].isin(kept_times)]
+        keep_data = data[data['Time_s'].isin(kept_times)]
+        has_r2 = 'R_squared' in data.columns and not data['R_squared'].isna().all()
+
+        hover_suffix = 'R²: %{customdata[1]:.3f}<extra></extra>' if has_r2 else '<extra></extra>'
+
+        fig = go.Figure()
+
+        if len(masked_data) > 0:
+            fig.add_trace(go.Scatter(
+                x=masked_data['Time_Relative_s'],
+                y=masked_data['NADH_mM'],
+                mode='markers',
+                marker=dict(color='lightgray', size=6),
+                name='Masked',
+                customdata=masked_data[['Time_s', 'R_squared']].values if has_r2 else masked_data[['Time_s']].values,
+                hovertemplate=(
+                    'Relative time: %{x:.1f} s<br>'
+                    'Original time: %{customdata[0]:.1f} s<br>'
+                    'NADH: %{y:.4f} mM<br>'
+                    + hover_suffix
+                ),
+            ))
+
+        fig.add_trace(go.Scatter(
+            x=keep_data['Time_Relative_s'],
+            y=keep_data['NADH_mM'],
+            mode='markers',
+            marker=dict(color='steelblue', size=6),
+            name='Used for modeling',
+            customdata=keep_data[['Time_s', 'R_squared']].values if has_r2 else keep_data[['Time_s']].values,
+            hovertemplate=(
+                'Relative time: %{x:.1f} s<br>'
+                'Original time: %{customdata[0]:.1f} s<br>'
+                'NADH: %{y:.4f} mM<br>'
+                + hover_suffix
+            ),
+        ))
+
+        fig.add_hline(
+            y=initial_nadh,
+            line=dict(color='red', dash='dash', width=1.5),
+            annotation_text=f'Initial NADH = {initial_nadh:.3f} mM',
+            annotation_position='top right',
+        )
+
+        n_masked = len(data) - len(kept)
+        fig.update_layout(
+            title=plot_title or 'Modeling Data Selection',
+            xaxis_title='Time (s)',
+            yaxis_title='NADH (mM)',
+            template='plotly_white',
+        )
+        fig.show()
+        print(f"Total points after assay start : {len(data)}")
+        print(f"  Used for modeling            : {len(kept)}")
+        print(f"  Masked (transition + R²<{r2_threshold}) : {n_masked}")
+
+    return kept
 
 
 def fit_nadh_degradation(timecourse_df, r2_threshold=0.8, plot=False, plot_title=None):
