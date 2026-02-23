@@ -25,6 +25,7 @@ def process_pdc_timecourse(
     standards_df,
     assay_start_time,
     blank_time=None,
+    nadh_time=None,
     initial_pyruvate_mM=None,
     method='constrained',
     wavelength_range=(320, 420),
@@ -66,6 +67,11 @@ def process_pdc_timecourse(
         Time point (in seconds) to use for blank/baseline correction
         If provided, pyruvate concentration is calculated from this spectrum (assuming NADH=0)
         If None, must provide initial_pyruvate_mM manually
+
+    nadh_time : float, optional (default=None)
+        Time point (in seconds) at which initial NADH is measured via spectral deconvolution
+        (pyruvate is fixed at the value calculated from blank_time).
+        If provided, the result DataFrame will contain a non-NaN 'Initial_NADH_mM' column.
 
     initial_pyruvate_mM : float, optional (default=None)
         Initial pyruvate concentration in mM
@@ -156,6 +162,10 @@ def process_pdc_timecourse(
     # (e.g. when the metadata CSV has '?' values mixed with numbers)
     if blank_time is not None and not pd.isna(blank_time):
         blank_time = float(blank_time)
+    if nadh_time is not None and not pd.isna(nadh_time):
+        nadh_time = float(nadh_time)
+    else:
+        nadh_time = None
     if assay_start_time is not None:
         assay_start_time = float(assay_start_time)
 
@@ -182,6 +192,8 @@ def process_pdc_timecourse(
                 print(f"Fallback pyruvate: {initial_pyruvate_mM} mM (if calculation fails)")
         else:
             print(f"Manual pyruvate: {initial_pyruvate_mM} mM (no blank calculation)")
+        if nadh_time is not None:
+            print(f"NADH time: {nadh_time} s (initial NADH will be calculated)")
         if method == 'constrained':
             print(f"Wavelength range: {wavelength_range[0]}-{wavelength_range[1]} nm")
             print(f"Max absorbance: {absorbance_max}")
@@ -196,7 +208,7 @@ def process_pdc_timecourse(
     # Determine pyruvate concentration to use
     if blank_time is not None and method != 'single_wavelength':
         # Calculate pyruvate from blank spectrum
-        blank_pyruvate_mM = _calculate_blank_pyruvate(
+        blank_pyruvate_mM = _calculate_initial_pyruvate(
             spectral_df, standards_df, spectral_cols, blank_time,
             method, wavelength_range, absorbance_max,
             initial_pyruvate_mM, fit_intercept, verbose
@@ -226,6 +238,15 @@ def process_pdc_timecourse(
     else:
         raise ValueError("This should not happen - parameter validation failed")
 
+    # Calculate initial NADH from nadh_time spectrum (pyruvate fixed at blank_pyruvate_mM)
+    initial_nadh_mM = np.nan
+    if nadh_time is not None and method != 'single_wavelength':
+        initial_nadh_mM = _calculate_initial_nadh(
+            spectral_df, standards_df, spectral_cols, nadh_time,
+            blank_pyruvate_mM, method, wavelength_range, absorbance_max,
+            fit_intercept, verbose
+        )
+
     # Process based on method
     if method == 'single_wavelength':
         if blank_time is None:
@@ -252,10 +273,13 @@ def process_pdc_timecourse(
     results_df['Fixed_Pyruvate'] = True if method != 'single_wavelength' else False
     results_df['Assay_Start_s'] = assay_start_time
     results_df['Blank_Time_s'] = blank_time if blank_time is not None else np.nan
+    results_df['Initial_pyruvate_mM'] = blank_pyruvate_mM if method != 'single_wavelength' else np.nan
+    results_df['Initial_NADH_mM'] = initial_nadh_mM
 
     # Reorder columns for clarity
     col_order = ['Time_s', 'Time_Relative_s', 'NADH_mM', 'Pyruvate_mM',
                  'R_squared', 'Intercept', 'Blank_Pyruvate_mM',
+                 'Initial_pyruvate_mM', 'Initial_NADH_mM',
                  'Method', 'Fixed_Pyruvate', 'Assay_Start_s', 'Blank_Time_s']
     results_df = results_df[[c for c in col_order if c in results_df.columns]]
 
@@ -273,7 +297,7 @@ def process_pdc_timecourse(
     return results_df
 
 
-def _calculate_blank_pyruvate(
+def _calculate_initial_pyruvate(
     spectral_df, standards_df, spectral_cols, blank_time,
     method, wavelength_range, absorbance_max,
     fallback_pyruvate_mM, fit_intercept, verbose
@@ -392,6 +416,86 @@ def _calculate_blank_pyruvate(
                 "Failed to calculate pyruvate from blank and no fallback value provided. "
                 "Please provide initial_pyruvate_mM as a fallback."
             )
+
+
+def _calculate_initial_nadh(
+    spectral_df, standards_df, spectral_cols, nadh_time,
+    fixed_pyruvate_mM, method, wavelength_range, absorbance_max,
+    fit_intercept, verbose
+):
+    """
+    Calculate initial NADH concentration at nadh_time with pyruvate fixed.
+
+    Returns the calculated NADH concentration, or np.nan if calculation fails.
+    """
+    if verbose:
+        print("Calculating initial NADH concentration at nadh_time...")
+        print(f"  Pyruvate fixed at: {fixed_pyruvate_mM:.4f} mM")
+
+    if pd.isna(nadh_time):
+        if verbose:
+            print("  ⚠️  Warning: nadh_time is NaN. Initial NADH set to NaN.")
+        return np.nan
+
+    idx_nadh = (spectral_df['Time_s'] - float(nadh_time)).abs().idxmin()
+    if pd.isna(idx_nadh):
+        if verbose:
+            print("  ⚠️  Warning: Could not find time point near nadh_time. Initial NADH set to NaN.")
+        return np.nan
+
+    nadh_row = spectral_df.loc[idx_nadh]
+    actual_nadh_time = nadh_row['Time_s']
+
+    spectrum_data = []
+    for col in spectral_cols:
+        try:
+            wavelength = float(col)
+            absorbance = nadh_row[col]
+            spectrum_data.append({'Wavelength': wavelength, 'Absorbance': absorbance})
+        except Exception:
+            continue
+
+    spectrum_df_nadh = pd.DataFrame(spectrum_data)
+
+    if method == 'full_spectrum':
+        wl_range = None
+        abs_max = None
+    elif method == 'constrained':
+        wl_range = wavelength_range
+        abs_max = absorbance_max
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    try:
+        result = calculate_concentrations(
+            spectrum_df=spectrum_df_nadh,
+            standards_df=standards_df,
+            wavelength_range=wl_range,
+            absorbance_max=abs_max,
+            fit_intercept=fit_intercept,
+            fixed_pyr=fixed_pyruvate_mM,
+            plot=False
+        )
+
+        initial_nadh = result['NADH_Conc']
+        r_squared = result['R_squared']
+
+        if verbose:
+            print(f"  Actual nadh_time: {actual_nadh_time:.1f} s")
+            print(f"  Calculated initial NADH: {initial_nadh:.4f} mM")
+            print(f"  Fit R²: {r_squared:.6f}")
+            if r_squared < 0.95:
+                print(f"  ⚠️  Warning: Low R² ({r_squared:.4f}) at nadh_time")
+            print()
+
+        return initial_nadh
+
+    except Exception as e:
+        if verbose:
+            print(f"  ⚠️  Error calculating initial NADH: {e}")
+            print("  Initial NADH set to NaN.")
+            print()
+        return np.nan
 
 
 def _process_single_wavelength(spectral_df, blank_time, verbose):
