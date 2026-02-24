@@ -849,7 +849,7 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
 
     # Initial transition mask
     if mask_until_rel is not None:
-        initial_mask = data['Time_Relative_s'].values <= float(mask_until_rel)
+        initial_mask = data['Time_Relative_s'].values < float(mask_until_rel)
     else:
         initial_mask = np.zeros(len(data), dtype=bool)
 
