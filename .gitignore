@@ -17,3 +17,4 @@ enzykit/assay_data/0121 20 16 8 4MM PYR-3.csv
 *.csv
 enzykit/__pycache__/__init__.cpython-311.pyc
 enzykit/__pycache__/timecourse.cpython-311.pyc
+*.pyc
