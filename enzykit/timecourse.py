@@ -834,7 +834,8 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
     plot : bool, optional (default=False)
         If True, generates a Plotly scatter plot showing masked points (gray)
         and kept points (steelblue), plus a dashed reference line at the
-        initial NADH concentration (first point at or after assay start).
+        initial NADH concentration (from Initial_NADH_mM column if available,
+        otherwise the first kinetic data point).
 
     plot_title : str, optional (default=None)
         Title for the plot. Auto-generated if None.
@@ -860,8 +861,26 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
 
     kept = data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
 
+    # Reference NADH: spectral measurement at init_nadh_time (Initial_NADH_mM column),
+    # falling back to the first kinetic data point if the column is absent or NaN.
+    if 'Initial_NADH_mM' in data.columns and not pd.isna(data['Initial_NADH_mM'].iloc[0]):
+        ref_nadh = float(data['Initial_NADH_mM'].iloc[0])
+    else:
+        ref_nadh = float(data['NADH_mM'].iloc[0])
+
+    # Plateau trimming: if the tail of kept has NADH < 5% of ref_nadh,
+    # limit those plateau points to 10% of the total kept count.
+    if not kept.empty and ref_nadh > 0:
+        plateau_threshold = 0.05 * ref_nadh
+        above = kept['NADH_mM'].values >= plateau_threshold
+        if not above.all() and above.any():
+            last_active_idx = int(above.nonzero()[0][-1])
+            n_plateau = len(kept) - (last_active_idx + 1)
+            n_max_plateau = max(1, round(0.10 * len(kept)))
+            if n_plateau > n_max_plateau:
+                kept = kept.iloc[:last_active_idx + 1 + n_max_plateau].copy().reset_index(drop=True)
+
     if plot and len(data) > 0:
-        initial_nadh = data['NADH_mM'].iloc[0]
         kept_times = set(kept['Time_s'].values)
         masked_data = data[~data['Time_s'].isin(kept_times)]
         keep_data = data[data['Time_s'].isin(kept_times)]
@@ -903,9 +922,9 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
         ))
 
         fig.add_hline(
-            y=initial_nadh,
+            y=ref_nadh,
             line=dict(color='red', dash='dash', width=1.5),
-            annotation_text=f'Initial NADH = {initial_nadh:.3f} mM',
+            annotation_text=f'Initial NADH = {ref_nadh:.3f} mM',
             annotation_position='top right',
         )
 
