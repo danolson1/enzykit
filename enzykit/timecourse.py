@@ -807,7 +807,9 @@ def _generate_diagnostic_plots(
     fig.show()
 
 
-def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, plot=False, plot_title=None):
+def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8,
+                         adjust_nadh_offset=False, expected_final_NADH=0.0,
+                         plot=False, plot_title=None):
     """
     Select data points for kinetic modeling from a timecourse DataFrame.
 
@@ -816,6 +818,8 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
       - Only points at or after assay start (Time_Relative_s >= 0)
       - Optional exclusion of an initial transition period
       - Exclusion of points with poor spectral fit quality (R² < r2_threshold)
+      - Optional offset of NADH values so the flat end of the assay matches
+        a known expected final concentration
 
     Parameters
     ----------
@@ -830,6 +834,15 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
     r2_threshold : float, optional (default=0.8)
         Points with R_squared < r2_threshold are excluded. Set to 0 to
         disable R² filtering.
+
+    adjust_nadh_offset : bool, optional (default=False)
+        If True, finds the flat region at the end of the assay (where the
+        slope is less than 1% of the maximum slope) and shifts all NADH_mM
+        values so that the mean NADH in that region equals expected_final_NADH.
+
+    expected_final_NADH : float, optional (default=0.0)
+        Target NADH concentration (mM) for the flat end of the assay.
+        Only used when adjust_nadh_offset=True.
 
     plot : bool, optional (default=False)
         If True, generates a Plotly scatter plot showing masked points (gray)
@@ -847,20 +860,6 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
     """
     data = timecourse_df[timecourse_df['Time_Relative_s'] >= 0].copy().reset_index(drop=True)
 
-    # Initial transition mask
-    if mask_until_rel is not None:
-        initial_mask = data['Time_Relative_s'].values < float(mask_until_rel)
-    else:
-        initial_mask = np.zeros(len(data), dtype=bool)
-
-    # R² mask
-    if 'R_squared' in data.columns and not data['R_squared'].isna().all():
-        r2_mask = data['R_squared'].values < r2_threshold
-    else:
-        r2_mask = np.zeros(len(data), dtype=bool)
-
-    kept = data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
-
     # Reference NADH: spectral measurement at init_nadh_time (Initial_NADH_mM column),
     # falling back to the first kinetic data point if the column is absent or NaN.
     if 'Initial_NADH_mM' in data.columns and not pd.isna(data['Initial_NADH_mM'].iloc[0]):
@@ -868,8 +867,64 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
     else:
         ref_nadh = float(data['NADH_mM'].iloc[0])
 
-    # Plateau trimming: if the tail of kept has NADH < 5% of ref_nadh,
-    # limit those plateau points to 10% of the total kept count.
+    # Step 1: Plateau detection and NADH offset.
+    # Slope/flat detection uses only post-transition data so that the large
+    # initial-transition slopes don't inflate max_slope and mask the end plateau.
+    # The offset, once found, is applied to all of data (including the transition).
+    flat_region_start_time = None  # set below if a flat tail is detected
+    if adjust_nadh_offset and len(data) > 2:
+        if mask_until_rel is not None:
+            det_data = data[data['Time_Relative_s'] >= float(mask_until_rel)].reset_index(drop=True)
+        else:
+            det_data = data
+
+        if len(det_data) > 2:
+            time_vals = det_data['Time_Relative_s'].values
+            nadh_vals = det_data['NADH_mM'].values
+            slopes = np.gradient(nadh_vals, time_vals)
+            max_slope = np.max(np.abs(slopes))
+
+            if max_slope > 0:
+                is_flat = np.abs(slopes) < 0.01 * max_slope
+
+                # Walk backwards, allow 1-point gap (handles single noisy edge points).
+                first_flat_idx = len(det_data)  # sentinel: no flat region found
+                n_gap = 0
+                for i in range(len(det_data) - 1, -1, -1):
+                    if is_flat[i]:
+                        first_flat_idx = i
+                        n_gap = 0
+                    else:
+                        n_gap += 1
+                        if n_gap > 1:
+                            break
+
+                if first_flat_idx < len(det_data):
+                    flat_region_start_time = det_data['Time_Relative_s'].values[first_flat_idx]
+                    flat_mean = float(np.mean(nadh_vals[first_flat_idx:]))
+                    nadh_offset = float(expected_final_NADH) - flat_mean
+                    data['NADH_mM'] = data['NADH_mM'] + nadh_offset
+                    ref_nadh = ref_nadh + nadh_offset
+                else:
+                    warnings.warn(
+                        "select_modeling_data: no flat end region found "
+                        "(slope never < 1% of max); NADH offset not applied."
+                    )
+
+    # Step 2: Apply transition and R² masks.
+    if mask_until_rel is not None:
+        initial_mask = data['Time_Relative_s'].values < float(mask_until_rel)
+    else:
+        initial_mask = np.zeros(len(data), dtype=bool)
+
+    if 'R_squared' in data.columns and not data['R_squared'].isna().all():
+        r2_mask = data['R_squared'].values < r2_threshold
+    else:
+        r2_mask = np.zeros(len(data), dtype=bool)
+
+    kept = data[~(initial_mask | r2_mask)].copy().reset_index(drop=True)
+
+    # Step 3: Plateau trimming — cap excess plateau points in kept.
     if not kept.empty and ref_nadh > 0:
         plateau_threshold = 0.05 * ref_nadh
         above = kept['NADH_mM'].values >= plateau_threshold
@@ -920,6 +975,17 @@ def select_modeling_data(timecourse_df, mask_until_rel=None, r2_threshold=0.8, p
                 + hover_suffix
             ),
         ))
+
+        if flat_region_start_time is not None:
+            plateau_pts = data[data['Time_Relative_s'] >= flat_region_start_time]
+            fig.add_trace(go.Scatter(
+                x=plateau_pts['Time_Relative_s'],
+                y=plateau_pts['NADH_mM'],
+                mode='lines',
+                line=dict(color='yellow', width=6),
+                opacity=0.3,
+                name='Detected plateau',
+            ))
 
         fig.add_hline(
             y=ref_nadh,
